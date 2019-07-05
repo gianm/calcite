@@ -60,6 +60,9 @@ import static org.apache.calcite.rex.RexUnknownAs.UNKNOWN;
  * Context required to simplify a row-expression.
  */
 public class RexSimplify {
+  /** Maximum number of argments to OR that we will attempt to simplify at once. */
+  private static final int SIMPLIFY_OR_THRESHOLD = 20;
+
   private final boolean paranoid;
   public final RexBuilder rexBuilder;
   private final RelOptPredicateList predicates;
@@ -495,6 +498,12 @@ public class RexSimplify {
   }
 
   private void simplifyOrTerms(List<RexNode> terms, RexUnknownAs unknownAs) {
+    // Don't attempt to simplify more than "SIMPLIFY_OR_THRESHOLD" terms at once. The algorithm
+    // in this method is O(N^2) in the number of terms, so runtime can blow up.
+    if (terms.size() > SIMPLIFY_OR_THRESHOLD) {
+      return;
+    }
+
     // Suppose we are processing "e1(x) OR e2(x) OR e3(x)". When we are
     // visiting "e3(x)" we know both "e1(x)" and "e2(x)" are not true (they
     // may be unknown), because if either of them were true we would have
