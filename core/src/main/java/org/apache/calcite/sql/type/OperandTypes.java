@@ -571,12 +571,12 @@ public abstract class OperandTypes {
         @Override public boolean checkSingleOperandType(
             SqlCallBinding callBinding,
             SqlNode operand,
-            int iFormalOperand,
+            SqlTypeFamily family,
             boolean throwOnFailure) {
           if (!LITERAL.checkSingleOperandType(
               callBinding,
               operand,
-              iFormalOperand,
+              0,
               throwOnFailure)) {
             return false;
           }
@@ -584,7 +584,7 @@ public abstract class OperandTypes {
           if (!super.checkSingleOperandType(
               callBinding,
               operand,
-              iFormalOperand,
+              family,
               throwOnFailure)) {
             return false;
           }
@@ -629,7 +629,7 @@ public abstract class OperandTypes {
             SqlCallBinding callBinding, SqlNode operand,
             int iFormalOperand, boolean throwOnFailure) {
           if (!LITERAL.checkSingleOperandType(callBinding, operand,
-              iFormalOperand, throwOnFailure)) {
+              0, throwOnFailure)) {
             return false;
           }
 
@@ -856,8 +856,8 @@ public abstract class OperandTypes {
           i -> false) {
         @Override public boolean checkSingleOperandType(
             SqlCallBinding callBinding, SqlNode node,
-            int iFormalOperand, boolean throwOnFailure) {
-          if (!super.checkSingleOperandType(callBinding, node, iFormalOperand,
+            SqlTypeFamily family, boolean throwOnFailure) {
+          if (!super.checkSingleOperandType(callBinding, node, family,
               throwOnFailure)) {
             return false;
           }
