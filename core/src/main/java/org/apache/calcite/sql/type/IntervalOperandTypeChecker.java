@@ -38,16 +38,15 @@ public class IntervalOperandTypeChecker implements SqlSingleOperandTypeChecker {
 
   @Override public boolean checkSingleOperandType(SqlCallBinding callBinding,
       SqlNode node, int iFormalOperand, boolean throwOnFailure) {
-    final SqlNode operand = callBinding.operand(iFormalOperand);
-    if (operand instanceof SqlIntervalQualifier) {
-      final SqlIntervalQualifier interval = (SqlIntervalQualifier) operand;
+    if (node instanceof SqlIntervalQualifier) {
+      final SqlIntervalQualifier interval = (SqlIntervalQualifier) node;
       if (predicate.test(interval)) {
         return true;
       }
       if (throwOnFailure) {
         final String name =
             Util.first(interval.timeFrameName, interval.timeUnitRange.name());
-        throw callBinding.getValidator().newValidationError(operand,
+        throw callBinding.getValidator().newValidationError(node,
             Static.RESOURCE.invalidTimeFrame(name));
       }
     }

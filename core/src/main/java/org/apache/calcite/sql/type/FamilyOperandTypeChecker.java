@@ -24,6 +24,7 @@ import org.apache.calcite.sql.SqlOperandCountRange;
 import org.apache.calcite.sql.SqlOperator;
 import org.apache.calcite.sql.SqlUtil;
 import org.apache.calcite.sql.validate.implicit.TypeCoercion;
+import org.apache.calcite.util.Util;
 
 import com.google.common.collect.ImmutableList;
 
@@ -65,7 +66,25 @@ public class FamilyOperandTypeChecker implements SqlSingleOperandTypeChecker,
       SqlNode node,
       int iFormalOperand,
       boolean throwOnFailure) {
-    final SqlTypeFamily family = families.get(iFormalOperand);
+    Util.discard(iFormalOperand);
+    if (families.size() != 1) {
+      throw new IllegalStateException(
+          "Cannot use as SqlSingleOperandTypeChecker without exactly one family");
+    }
+    return checkSingleOperandType(callBinding, node, families.get(0), throwOnFailure);
+  }
+
+  /**
+   * Helper function used by {@link #checkSingleOperandType(SqlCallBinding, SqlNode, int, boolean)}
+   * and {@link #checkOperandTypes(SqlCallBinding, boolean)}. If you are creating a subclass that
+   * customizes the logic of this class, it's generally best to override this method rather than
+   * one of the others.
+   */
+  protected boolean checkSingleOperandType(
+      SqlCallBinding callBinding,
+      SqlNode node,
+      SqlTypeFamily family,
+      boolean throwOnFailure) {
     switch (family) {
     case ANY:
       final RelDataType type = SqlTypeUtil.deriveType(callBinding, node);
@@ -124,7 +143,7 @@ public class FamilyOperandTypeChecker implements SqlSingleOperandTypeChecker,
       if (!checkSingleOperandType(
           callBinding,
           op.e,
-          op.i,
+          families.get(op.i),
           false)) {
         // try to coerce type if it is allowed.
         boolean coerced = false;
@@ -142,7 +161,7 @@ public class FamilyOperandTypeChecker implements SqlSingleOperandTypeChecker,
           if (!checkSingleOperandType(
               callBinding,
               op1.e,
-              op1.i,
+              families.get(op1.i),
               throwOnFailure)) {
             return false;
           }
@@ -165,7 +184,7 @@ public class FamilyOperandTypeChecker implements SqlSingleOperandTypeChecker,
       if (!checkSingleOperandType(
           callBinding,
           op.e,
-          op.i,
+          families.get(op.i),
           throwOnFailure)) {
         return false;
       }
