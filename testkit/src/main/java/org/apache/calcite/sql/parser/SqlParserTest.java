@@ -5147,7 +5147,7 @@ public class SqlParserTest {
 
   @Test void testPipeSyntaxIllegal() {
     final SqlConformanceEnum lenient = SqlConformanceEnum.LENIENT;
-    sql("^1^ + 2 |> where true")
+    sql("1 + 2 ^|>^ where true")
         .withConformance(lenient)
         .fails("Non-query expression encountered in illegal context");
     sql("^|>^ where empno > 1")
