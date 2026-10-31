@@ -97,6 +97,12 @@ public interface CalciteResource {
   @BaseMessage("Non-query expression encountered in illegal context")
   ExInst<CalciteException> illegalNonQueryExpression();
 
+  /** Invalid statement, e.g. {@code "1 + 1"} is not a valid statement
+   * because a statement must be a query (SELECT, VALUES, TABLE)
+   * or a statement keyword (INSERT, UPDATE, DELETE, ...). */
+  @BaseMessage("Invalid SQL statement: query or other statement expected")
+  ExInst<CalciteException> invalidStatement();
+
   @BaseMessage("Query expression encountered in illegal context")
   ExInst<CalciteException> illegalQueryExpression();
 
@@ -420,6 +426,9 @@ public interface CalciteResource {
 
   @BaseMessage("Aggregate expressions cannot be nested")
   ExInst<SqlValidatorException> nestedAggIllegal();
+
+  @BaseMessage("Aggregate expressions cannot be nested: ''{0}'' is a SELECT-list alias for an aggregate expression")
+  ExInst<SqlValidatorException> orderByAliasNestedAgg(String a0);
 
   @BaseMessage("Measure expressions can only occur within AGGREGATE function")
   ExInst<SqlValidatorException> measureIllegal();

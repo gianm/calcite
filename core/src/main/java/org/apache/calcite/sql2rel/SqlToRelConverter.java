@@ -867,12 +867,12 @@ public class SqlToRelConverter {
     }
 
     if (select.isDistinctOn()) {
-      convertOrder(select, bb, collation, orderExprList, null, null);
-    } else {
-      convertOrder(
-          select, bb, collation, orderExprList, select.getOffset(),
-          select.getFetch());
+      convertDistinctOn(bb, select, collationList);
     }
+
+    convertOrder(
+        select, bb, collation, orderExprList, select.getOffset(),
+        select.getFetch());
 
     if (select.hasHints()) {
       final List<RelHint> hints = SqlUtil.getRelHint(hintStrategies, select.getHints());
@@ -892,20 +892,6 @@ public class SqlToRelConverter {
               }), true);
     } else {
       bb.setRoot(bb.root(), true);
-    }
-
-    if (select.isDistinctOn()) {
-      convertDistinctOn(bb, select, collationList);
-      final @Nullable RexNode offsetExpr = select.getOffset() == null
-          ? null : convertExpression(select.getOffset());
-      final @Nullable RexNode fetchExpr = select.getFetch() == null
-          ? null : convertExpression(select.getFetch());
-      if (offsetExpr != null || fetchExpr != null) {
-        bb.setRoot(
-            LogicalSort.create(bb.root(), RelCollations.EMPTY,
-                offsetExpr, fetchExpr),
-            false);
-      }
     }
   }
 
@@ -1190,6 +1176,8 @@ public class SqlToRelConverter {
             || (offset instanceof SqlLiteral
                 && Objects.equals(((SqlLiteral) offset).bigDecimalValue(), BigDecimal.ZERO)))
           && fetch == null) {
+        // DISTINCT ON may have added ORDER BY expressions; remove them
+        removeOrderExprs(bb, orderExprList);
         return;
       }
     }
@@ -1201,6 +1189,12 @@ public class SqlToRelConverter {
             fetch == null ? null : convertExpression(fetch)),
         false);
 
+    removeOrderExprs(bb, orderExprList);
+  }
+
+  /** Removes the expressions that were added to the project list only to
+   * sort the result. */
+  private void removeOrderExprs(Blackboard bb, List<SqlNode> orderExprList) {
     // If extra expressions were added to the project list for sorting,
     // add another project to remove them. But make the collation empty, because
     // we can't represent the real collation.
@@ -1479,7 +1473,7 @@ public class SqlToRelConverter {
 
       if (!config.isExpand()) {
         if (query instanceof SqlNodeList) {
-          convertNodeListToSubQuery(bb, subQuery, query, leftSqlKeys, targetRowType, call);
+          convertNodeListToSubQuery(bb, subQuery, query, leftKeyNode, targetRowType, call);
           return;
         }
         return;
@@ -1522,7 +1516,7 @@ public class SqlToRelConverter {
       // Instead, we convert to a RexSubQuery which can be optimized later.
       if (bb.root == null) {
         if (query instanceof SqlNodeList) {
-          convertNodeListToSubQuery(bb, subQuery, query, leftSqlKeys, targetRowType, call);
+          convertNodeListToSubQuery(bb, subQuery, query, leftKeyNode, targetRowType, call);
         }
         return;
       }
@@ -2105,7 +2099,7 @@ public class SqlToRelConverter {
    * @param bb              Blackboard containing the context
    * @param subQuery        The SubQuery to populate with the converted expression
    * @param query           The query node (expected to be a SqlNodeList)
-   * @param leftSqlKeys     Left-hand key expressions for IN/SOME/ALL
+   * @param leftKeyNode     Left-hand operand of IN/SOME/ALL
    * @param targetRowType   The target row type for the conversion
    * @param call            The original SQL call
    */
@@ -2113,17 +2107,40 @@ public class SqlToRelConverter {
       Blackboard bb,
       SubQuery subQuery,
       SqlNode query,
-      List<SqlNode> leftSqlKeys,
+      SqlNode leftKeyNode,
       RelDataType targetRowType,
       SqlCall call) {
     RelNode relNode = convertRowValues(bb, query, (SqlNodeList) query, false, targetRowType);
-    final ImmutableList.Builder<RexNode> builder = ImmutableList.builder();
-    for (SqlNode node : leftSqlKeys) {
-      builder.add(bb.convertExpression(node));
-    }
-    final ImmutableList<RexNode> list = builder.build();
+    final ImmutableList<RexNode> list = convertInKeys(bb, leftKeyNode);
     assert relNode != null;
     subQuery.expr = createSubquery(subQuery.node.getKind(), relNode, list, call);
+  }
+
+  /**
+   * Converts the left-hand operand of IN/SOME/ALL to a list of expressions,
+   * one for each column of the right-hand operand.
+   *
+   * <p>For a ROW constructor, the list contains its operands:
+   * for {@code (a, b) IN ((1, 2))} the list is [a, b].
+   * For any other operand of a ROW type, the list contains its fields, as in
+   * the validator (see {@link SqlInOperator#deriveType}): if {@code r} has
+   * type {@code ROW(x INTEGER, y INTEGER)}, for {@code r IN (ROW(1, 2))}
+   * the list is [r.x, r.y]. For any other operand, the list contains only
+   * the operand.
+   */
+  private ImmutableList<RexNode> convertInKeys(Blackboard bb, SqlNode leftKeyNode) {
+    if (leftKeyNode.getKind() == SqlKind.ROW) {
+      return ((SqlCall) leftKeyNode).getOperandList().stream()
+          .map(bb::convertExpression)
+          .collect(toImmutableList());
+    }
+    final RexNode key = bb.convertExpression(leftKeyNode);
+    if (!key.getType().isStruct()) {
+      return ImmutableList.of(key);
+    }
+    return key.getType().getFieldList().stream()
+        .map(field -> rexBuilder.makeFieldAccess(key, field.getIndex()))
+        .collect(toImmutableList());
   }
 
   /**
@@ -4355,7 +4372,8 @@ public class SqlToRelConverter {
       return;
     }
 
-    if (removeSortInSubQuery(bb.top)) {
+    // DISTINCT ON needs the ORDER BY even if the sort is removed
+    if (removeSortInSubQuery(bb.top) && !select.isDistinctOn()) {
       SqlNode offset = select.getOffset();
       if ((offset == null
               || (offset instanceof SqlLiteral
@@ -6327,21 +6345,7 @@ public class SqlToRelConverter {
           query = call.operand(1);
           if (!(query instanceof SqlNodeList)) {
             root = convertQueryRecursive(query, false, null);
-            final SqlNode operand = call.operand(0);
-            List<SqlNode> nodes;
-            switch (operand.getKind()) {
-            case ROW:
-              nodes = ((SqlCall) operand).getOperandList();
-              break;
-            default:
-              nodes = ImmutableList.of(operand);
-            }
-            final ImmutableList.Builder<RexNode> builder =
-                ImmutableList.builder();
-            for (SqlNode node : nodes) {
-              builder.add(convertExpression(node));
-            }
-            final ImmutableList<RexNode> list = builder.build();
+            final ImmutableList<RexNode> list = convertInKeys(this, call.operand(0));
             RelNode rel = root.rel;
             // Fix the correlation namespaces and de-duplicate the correlation variables.
             CorrelationUse correlationUse = getCorrelationUse(this, root.rel);

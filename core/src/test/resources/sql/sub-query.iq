@@ -11003,3 +11003,242 @@ from t;
 (2 rows)
 
 !ok
+
+# [CALCITE-7887] SubQueryRemoveRule fails for a sub-query inside a window function
+# IN sub-query inside the argument of a windowed aggregate.
+# The result of this query was validated using Postgres.
+SELECT empno,
+  SUM(CASE WHEN deptno IN (SELECT deptno FROM dept WHERE deptno < 30) THEN 1 ELSE 0 END)
+    OVER (ORDER BY empno) AS s
+FROM emp
+WHERE empno < 7600;
++-------+---+
+| EMPNO | S |
++-------+---+
+|  7369 | 1 |
+|  7499 | 1 |
+|  7521 | 1 |
+|  7566 | 2 |
++-------+---+
+(4 rows)
+
+!ok
+
+# Correlated EXISTS sub-query inside the argument of a windowed aggregate that has a PARTITION BY.
+SELECT empno, deptno,
+  COUNT(CASE WHEN EXISTS (SELECT 1 FROM emp AS e2 WHERE e2.mgr = e.empno) THEN 1 END)
+    OVER (PARTITION BY deptno) AS c
+FROM emp AS e
+ORDER BY empno;
++-------+--------+---+
+| EMPNO | DEPTNO | C |
++-------+--------+---+
+|  7369 |     20 | 3 |
+|  7499 |     30 | 1 |
+|  7521 |     30 | 1 |
+|  7566 |     20 | 3 |
+|  7654 |     30 | 1 |
+|  7698 |     30 | 1 |
+|  7782 |     10 | 2 |
+|  7788 |     20 | 3 |
+|  7839 |     10 | 2 |
+|  7844 |     30 | 1 |
+|  7876 |     20 | 3 |
+|  7900 |     30 | 1 |
+|  7902 |     20 | 3 |
+|  7934 |     10 | 2 |
++-------+--------+---+
+(14 rows)
+
+!ok
+
+# Correlated scalar sub-query as the argument of a windowed aggregate.
+SELECT empno,
+  SUM((SELECT COUNT(*) FROM emp AS e2 WHERE e2.mgr = e.empno))
+    OVER (ORDER BY empno) AS s
+FROM emp AS e
+WHERE deptno = 20
+ORDER BY empno;
++-------+---+
+| EMPNO | S |
++-------+---+
+|  7369 | 0 |
+|  7566 | 2 |
+|  7788 | 3 |
+|  7876 | 3 |
+|  7902 | 4 |
++-------+---+
+(5 rows)
+
+!ok
+
+# IN sub-query in the PARTITION BY clause of a window.
+SELECT empno, deptno,
+  COUNT(*) OVER (PARTITION BY deptno IN (SELECT deptno FROM dept WHERE dname = 'SALES')) AS c
+FROM emp
+ORDER BY empno;
++-------+--------+---+
+| EMPNO | DEPTNO | C |
++-------+--------+---+
+|  7369 |     20 | 8 |
+|  7499 |     30 | 6 |
+|  7521 |     30 | 6 |
+|  7566 |     20 | 8 |
+|  7654 |     30 | 6 |
+|  7698 |     30 | 6 |
+|  7782 |     10 | 8 |
+|  7788 |     20 | 8 |
+|  7839 |     10 | 8 |
+|  7844 |     30 | 6 |
+|  7876 |     20 | 8 |
+|  7900 |     30 | 6 |
+|  7902 |     20 | 8 |
+|  7934 |     10 | 8 |
++-------+--------+---+
+(14 rows)
+
+!ok
+
+# Correlated EXISTS sub-query in the ORDER BY clause of a window.
+SELECT empno,
+  ROW_NUMBER() OVER (ORDER BY EXISTS (SELECT 1 FROM emp AS e2 WHERE e2.mgr = e.empno) DESC,
+    empno) AS rn
+FROM emp AS e
+WHERE deptno = 20
+ORDER BY empno;
++-------+----+
+| EMPNO | RN |
++-------+----+
+|  7369 |  4 |
+|  7566 |  1 |
+|  7788 |  2 |
+|  7876 |  5 |
+|  7902 |  3 |
++-------+----+
+(5 rows)
+
+!ok
+
+# NOT IN sub-query whose result is UNKNOWN (the sub-query
+# returns a NULL) inside a windowed COUNT. COUNT ignores UNKNOWN values,
+# so the sub-query must be expanded using three-valued logic.
+SELECT empno,
+  COUNT(deptno NOT IN (SELECT mgr FROM emp)) OVER () AS c1,
+  COUNT(*) OVER () AS c2
+FROM emp
+WHERE deptno = 10
+ORDER BY empno;
++-------+----+----+
+| EMPNO | C1 | C2 |
++-------+----+----+
+|  7782 |  0 |  3 |
+|  7839 |  0 |  3 |
+|  7934 |  0 |  3 |
++-------+----+----+
+(3 rows)
+
+!ok
+
+# Two sub-queries in the same window: one in the argument of
+# the aggregate, one in the PARTITION BY clause.
+SELECT empno,
+  SUM(CASE WHEN EXISTS (SELECT 1 FROM emp AS e2 WHERE e2.mgr = e.empno) THEN 1 ELSE 0 END)
+    OVER (PARTITION BY deptno IN (SELECT deptno FROM dept WHERE loc = 'DALLAS')
+          ORDER BY empno) AS s
+FROM emp AS e
+ORDER BY empno;
++-------+---+
+| EMPNO | S |
++-------+---+
+|  7369 | 0 |
+|  7499 | 0 |
+|  7521 | 0 |
+|  7566 | 1 |
+|  7654 | 0 |
+|  7698 | 1 |
+|  7782 | 2 |
+|  7788 | 2 |
+|  7839 | 3 |
+|  7844 | 3 |
+|  7876 | 2 |
+|  7900 | 3 |
+|  7902 | 3 |
+|  7934 | 3 |
++-------+---+
+(14 rows)
+
+!ok
+
+# [CALCITE-7887] SubQueryRemoveRule fails for a sub-query inside a window function
+# SELECT list with a sub-query correlated to the current scope followed by
+# one correlated to an outer scope. SubQueryRemoveRule used to rewrite one
+# sub-query of a Project per call, so the second one was bound to the inner
+# input instead of DEPT ("Correlation variable $cor1 should be defined").
+select d.dname,
+  (select max((select count(*) from emp as s where s.mgr = e.empno)
+       + (select count(*) from emp as s where s.deptno = d.deptno))
+   from emp as e) as c
+from dept as d
+order by d.dname;
++------------+----+
+| DNAME      | C  |
++------------+----+
+| ACCOUNTING |  8 |
+| OPERATIONS |  5 |
+| RESEARCH   | 10 |
+| SALES      | 11 |
++------------+----+
+(4 rows)
+
+!ok
+
+# The same sub-queries in the other order
+select d.dname,
+  (select max((select count(*) from emp as s where s.deptno = d.deptno)
+       + (select count(*) from emp as s where s.mgr = e.empno))
+   from emp as e) as c
+from dept as d
+order by d.dname;
++------------+----+
+| DNAME      | C  |
++------------+----+
+| ACCOUNTING |  8 |
+| OPERATIONS |  5 |
+| RESEARCH   | 10 |
+| SALES      | 11 |
++------------+----+
+(4 rows)
+
+!ok
+
+# Several sub-queries of different kinds in one SELECT list, each adding
+# auxiliary fields to the input
+select e.ename,
+  (select count(*) from emp as s where s.mgr = e.empno) as c1,
+  e.sal < (select max(s.sal) from emp as s) as c2,
+  exists (select 1 from emp as s where s.mgr = e.empno) as c3,
+  e.deptno in (select d.deptno from dept as d where d.loc = 'DALLAS') as c4,
+  e.mgr not in (select s.mgr from emp as s where s.job = 'CLERK') as c5
+from emp as e
+order by e.ename;
++--------+----+-------+-------+-------+-------+
+| ENAME  | C1 | C2    | C3    | C4    | C5    |
++--------+----+-------+-------+-------+-------+
+| ADAMS  |  0 | true  | false | true  | false |
+| ALLEN  |  0 | true  | false | false | false |
+| BLAKE  |  5 | true  | true  | false | true  |
+| CLARK  |  1 | true  | true  | false | true  |
+| FORD   |  1 | true  | true  | true  | true  |
+| JAMES  |  0 | true  | false | false | false |
+| JONES  |  2 | true  | true  | true  | true  |
+| KING   |  3 | false | true  | false |       |
+| MARTIN |  0 | true  | false | false | false |
+| MILLER |  0 | true  | false | false | false |
+| SCOTT  |  1 | true  | true  | true  | true  |
+| SMITH  |  0 | true  | false | true  | false |
+| TURNER |  0 | true  | false | false | false |
+| WARD   |  0 | true  | false | false | false |
++--------+----+-------+-------+-------+-------+
+(14 rows)
+
+!ok

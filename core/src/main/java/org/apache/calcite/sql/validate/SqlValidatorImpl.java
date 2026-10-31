@@ -716,7 +716,7 @@ public class SqlValidatorImpl implements SqlValidatorWithHints {
         // COALESCE is only needed for FULL JOIN; for RIGHT JOIN use the right
         // column (always non-null), and for INNER/LEFT JOIN use the left column.
         final JoinType joinType = join.getJoinType();
-        final SqlNode colRef;
+        SqlNode colRef;
         if (joinType.generatesNullsOnLeft() && joinType.generatesNullsOnRight()) {
           colRef =
               SqlStdOperatorTable.COALESCE.createCall(
@@ -727,6 +727,25 @@ public class SqlValidatorImpl implements SqlValidatorWithHints {
           colRef = qualifiedNode.get(1);
         } else {
           colRef = qualifiedNode.get(0);
+        }
+
+        // For joins other than FULL JOIN, the common column is represented by
+        // one input column. Cast it to the common type of both inputs, as in
+        // the SELECT * expansion in Permute.
+        if (!joinType.generatesNullsOnLeft()
+            || !joinType.generatesNullsOnRight()) {
+          final RelDataType leftType = deriveType(scope, qualifiedNode.get(0));
+          final RelDataType rightType = deriveType(scope, qualifiedNode.get(1));
+          final RelDataType commonType =
+              requireNonNull(
+                  SqlTypeUtil.leastRestrictiveForComparison(typeFactory, leftType,
+                      rightType),
+                  () -> "leastRestrictiveForComparison for types " + leftType
+                      + " and " + rightType);
+          final RelDataType colRefType = joinType.generatesNullsOnLeft()
+              ? rightType
+              : leftType;
+          colRef = maybeCast(colRef, colRefType, commonType);
         }
 
         // If there is an alias for the column, no need to wrap with an AS operator
@@ -1272,7 +1291,12 @@ public class SqlValidatorImpl implements SqlValidatorWithHints {
     scope = new CatalogScope(scope, ImmutableList.of("CATALOG"));
     final SqlNode topNode2 = validateScopedExpression(topNode, scope);
     final RelDataType type = getValidatedNodeType(topNode2);
-    Util.discard(type);
+    if (topNode2 != topNode) {
+      // The top node was rewritten (for example "TABLE t" becomes
+      // "SELECT * FROM t"). Callers such as Prepare still hold the original
+      // node and ask for its type, so register the type for it as well.
+      setValidatedNodeType(topNode, type);
+    }
     return topNode2;
   }
 
@@ -1920,7 +1944,6 @@ public class SqlValidatorImpl implements SqlValidatorWithHints {
               type.getFullTypeString()));
     }
   }
-
   /**
    * Performs expression rewrites which are always used unconditionally. These
    * rewrites massage the expression tree into a standard form so that the
@@ -8041,13 +8064,27 @@ public class SqlValidatorImpl implements SqlValidatorWithHints {
     }
 
     for (SqlNode param : aggCall.getOperandList()) {
-      if (a.findAgg(param) != null) {
+      final SqlCall nestedAgg = a.findAgg(param);
+      if (nestedAgg != null) {
+        if (scope instanceof OrderByScope) {
+          for (SqlNode node
+              : SqlUtil.getAncestry(param, n -> n == nestedAgg, n -> false)) {
+            final SqlNode original = getOriginal(node);
+            if (original instanceof SqlIdentifier
+                && ((SqlIdentifier) original).isSimple()) {
+              throw newValidationError(getOriginal(aggCall),
+                  RESOURCE.orderByAliasNestedAgg(((SqlIdentifier) original).getSimple()));
+            }
+          }
+        }
         throw newValidationError(aggCall, RESOURCE.nestedAggIllegal());
       }
     }
     if (filter != null) {
       if (a.findAgg(filter) != null) {
-        throw newValidationError(filter, RESOURCE.aggregateInFilterIllegal());
+        throw newValidationError(
+            scope instanceof OrderByScope ? getOriginal(filter) : filter,
+            RESOURCE.aggregateInFilterIllegal());
       }
     }
     if (distinctList != null) {
@@ -8912,9 +8949,9 @@ public class SqlValidatorImpl implements SqlValidatorWithHints {
         final SqlNameMatcher nameMatcher = catalogReader.nameMatcher();
         RelDataTypeField field = nameMatcher.field(rowType, alias);
         if (field != null) {
-          return nthSelectItem(
-              field.getIndex(),
-              id.getParserPosition());
+          final SqlNode expanded = nthSelectItem(field.getIndex(), id.getParserPosition());
+          setOriginal(expanded, id);
+          return expanded;
         }
       }
 
@@ -8944,7 +8981,9 @@ public class SqlValidatorImpl implements SqlValidatorWithHints {
       // operand[1] is a field name, not a column reference, and must not be qualified.
       CallCopyingArgHandler argHandler = new CallCopyingArgHandler(call, false);
       call.getOperator().acceptCall(this, call, true, argHandler);
-      return argHandler.result();
+      final SqlNode expanded = argHandler.result();
+      setOriginal(expanded, call);
+      return expanded;
     }
   }
 
